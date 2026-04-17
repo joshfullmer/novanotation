@@ -3,7 +3,11 @@ import { VALID_EXAMPLE, INVALID_EXAMPLE } from './examples.ts';
 
 console.log('=== VALID EXAMPLE ===');
 const validErrors = validateDocument(VALID_EXAMPLE, true);
-console.log(validErrors.length === 0 ? '\nResult: PASS (0 errors)\n' : `\nResult: FAIL (${validErrors.length} errors)\n`);
+console.log(
+	validErrors.length === 0
+		? '\nResult: PASS (0 errors)\n'
+		: `\nResult: FAIL (${validErrors.length} errors)\n`
+);
 
 console.log('=== INVALID EXAMPLE ===');
 const invalidErrors = validateDocument(INVALID_EXAMPLE, true);

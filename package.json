@@ -14,7 +14,8 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
-		"examples": "node --experimental-strip-types src/lib/__tests__/run-examples.ts"
+		"examples": "node --experimental-strip-types src/lib/__tests__/run-examples.ts",
+		"verify": "./scripts/verify.sh"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^2.0.4",
