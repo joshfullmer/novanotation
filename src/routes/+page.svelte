@@ -1,8 +1,37 @@
 <script lang="ts">
 	import { validateDocument, applyDocument } from '$lib';
 	import type { DiceState, ValidationError } from '$lib';
+	import { page } from '$app/state';
 
-	let notation = $state('');
+	const presets = [
+		{
+			id: 'opening',
+			label: 'OPENING',
+			notation: 'w|4w3\nt|4t2\nw|6w5\nt|6t4\nw|8w6\nt|8t3'
+		},
+		{
+			id: 'skirmish',
+			label: 'SKIRMISH',
+			notation: 'w|4w3\nt|4t4\nw|6w2\nt|6t5\nw+6w4\nt-4t2\nw|8w7\nt$6w4\nw@4w2\nt|8t6'
+		},
+		{
+			id: 'showcase',
+			label: 'SHOWCASE',
+			notation: 'w|4w3\nt|4t2\nw|6w5\nt|6t4\nw+4w4\nt$4w4\nw-6w3\nt.6t1\nw@6w4\nt|8t7'
+		}
+	] as const;
+
+	const initialNotation: string =
+		presets.find((p) => p.id === page.url.searchParams.get('doc'))?.notation ?? '';
+
+	let notation = $state(initialNotation);
+
+	function loadPreset(preset: (typeof presets)[number]) {
+		notation = preset.notation;
+		const url = new URL(window.location.href);
+		url.searchParams.set('doc', preset.id);
+		window.history.replaceState(null, '', url.pathname + url.search);
+	}
 
 	type Result =
 		| { kind: 'empty' }
@@ -66,11 +95,23 @@
 	<section
 		class="flex min-h-0 flex-col border-r border-rim last:border-r-0 max-md:border-r-0 max-md:border-b max-md:border-b-rim"
 	>
-		<div
-			class="flex shrink-0 items-center justify-between border-b border-rim bg-panel px-6 py-[0.6rem]"
-		>
-			<span class="text-[0.72rem] tracking-[0.22em] text-phosphor-dim">INPUT.NOTATION</span>
-			<span class="text-[0.72rem] tracking-widest text-phosphor-dim"
+		<div class="flex shrink-0 items-center gap-3 border-b border-rim bg-panel px-6 py-[0.6rem]">
+			<span class="shrink-0 text-[0.72rem] tracking-[0.22em] text-phosphor-dim">INPUT.NOTATION</span
+			>
+			<div class="flex flex-1 items-center justify-end gap-2">
+				<span class="text-[0.65rem] tracking-[0.18em] text-phosphor-muted max-sm:hidden"
+					>EXAMPLES:</span
+				>
+				{#each presets as preset (preset.id)}
+					<button
+						type="button"
+						onclick={() => loadPreset(preset)}
+						class="border border-rim px-2 py-[0.15rem] text-[0.65rem] tracking-[0.18em] text-phosphor-dim transition-colors hover:border-phosphor-dim hover:text-phosphor max-sm:hidden"
+						>{preset.label}</button
+					>
+				{/each}
+			</div>
+			<span class="shrink-0 text-[0.72rem] tracking-widest text-phosphor-dim"
 				>{lineCount} move{lineCount !== 1 ? 's' : ''}</span
 			>
 		</div>
