@@ -13,7 +13,8 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run"
+		"test": "npm run test:unit -- --run",
+		"examples": "node --experimental-strip-types src/lib/__tests__/run-examples.ts"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^2.0.4",
@@ -39,5 +40,8 @@
 		"typescript-eslint": "^8.58.1",
 		"vite": "^8.0.7",
 		"vitest": "^4.1.3"
+	},
+	"dependencies": {
+		"arkregex": "^0.0.5"
 	}
 }
