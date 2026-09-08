@@ -1,23 +1,26 @@
 <script lang="ts">
-	import { validateDocument, applyDocument } from '$lib';
-	import type { DiceState, ValidationError } from '$lib';
+	import { analyzeDocument, PLAYER_LABEL } from '$lib';
+	import type { GameReport, Outcome } from '$lib';
+	import { VALID_GAME } from '$lib/examples';
+	import DiceBoard from '$lib/components/DiceBoard.svelte';
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 
 	const presets = [
 		{
 			id: 'opening',
 			label: 'OPENING',
-			notation: 'w|4w3\nt|4t2\nw|6w5\nt|6t4\nw|8w6\nt|8t3'
+			notation: "A3\nA'2\nB5\nB'4\nC6\nC'3"
 		},
 		{
 			id: 'skirmish',
 			label: 'SKIRMISH',
-			notation: 'w|4w3\nt|4t4\nw|6w2\nt|6t5\nw+6w4\nt-4t2\nw|8w7\nt$6w4\nw@4w2\nt|8t6'
+			notation: "1| A3\n2| A'4\n3| B2 (-A'2)\n4| B'5\n5| +B4 xA'\n6| xB\n7| C7\n8| D'6"
 		},
 		{
-			id: 'showcase',
-			label: 'SHOWCASE',
-			notation: 'w|4w3\nt|4t2\nw|6w5\nt|6t4\nw+4w4\nt$4w4\nw-6w3\nt.6t1\nw@6w4\nt|8t7'
+			id: 'match',
+			label: 'MATCH',
+			notation: VALID_GAME
 		}
 	] as const;
 
@@ -28,67 +31,40 @@
 
 	function loadPreset(preset: (typeof presets)[number]) {
 		notation = preset.notation;
-		const url = new URL(window.location.href);
+		const url = new URL(page.url);
 		url.searchParams.set('doc', preset.id);
-		window.history.replaceState(null, '', url.pathname + url.search);
+		// Same page, only the query changes; the path comes from page.url and is already resolved.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		replaceState(url, {});
 	}
 
 	type Result =
 		| { kind: 'empty' }
-		| { kind: 'invalid'; errors: ValidationError[] }
-		| { kind: 'valid'; state: DiceState };
+		| { kind: 'invalid'; report: GameReport }
+		| { kind: 'valid'; report: GameReport };
+
+	let report = $derived(analyzeDocument(notation));
 
 	let result = $derived.by((): Result => {
 		if (!notation.trim()) return { kind: 'empty' };
-		const errors = validateDocument(notation);
-		if (errors.length > 0) return { kind: 'invalid', errors };
-		return { kind: 'valid', state: applyDocument(notation) };
+		return { kind: report.errors.length > 0 ? 'invalid' : 'valid', report };
 	});
 
-	const players = [
-		{ key: 'w' as const, label: 'WE' },
-		{ key: 't' as const, label: 'THEY' }
-	];
-
-	let lineCount = $derived(
-		notation.trim() ? notation.trim().split('\n').filter(Boolean).length : 0
-	);
-
-	function parseFixer(entry: string) {
-		const m = /^(4|6|8|10|12|20)([wt])$/.exec(entry);
-		return m ? { sides: m[1], owner: m[2] as 'w' | 't' } : null;
+	function describeOutcome(outcome: Outcome): string {
+		if (outcome.kind === 'undecided') return 'UNDECIDED';
+		const how = outcome.how === 'start' ? 'START OF TURN' : 'OVERTIME, TURN';
+		return `${PLAYER_LABEL[outcome.player]} WINS — ${how} ${outcome.turn}`;
 	}
 
-	function parseGig(entry: string) {
-		const m = /^(4|6|8|10|12|20)([wt])(\d+)$/.exec(entry);
-		return m ? { sides: m[1], owner: m[2] as 'w' | 't', value: parseInt(m[3]) } : null;
-	}
-
-	const playerTheme = {
-		w: {
-			header: 'bg-we/4 border-b border-we/15',
-			label: 'text-we glow-we'
-		},
-		t: {
-			header: 'bg-they/4 border-b border-they/15',
-			label: 'text-they glow-they'
-		}
-	} as const;
-
-	const ownerTheme = {
-		w: {
-			fixer: 'border-we/20 text-we/35',
-			gig: 'die-gig-we',
-			label: 'text-we',
-			value: 'text-we glow-die-we'
-		},
-		t: {
-			fixer: 'border-they/20 text-they/35',
-			gig: 'die-gig-they',
-			label: 'text-they',
-			value: 'text-they glow-die-they'
-		}
-	} as const;
+	const placeholder = [
+		'; one turn per line, odd turns = first player',
+		'; first: WE   (header, optional)',
+		'',
+		'1| A4 -A1',
+		"2| A'4",
+		'3| B4 (-B2)',
+		'...'
+	].join('\n');
 </script>
 
 <main class="grid min-h-0 flex-1 grid-cols-2 max-md:grid-cols-1">
@@ -112,13 +88,13 @@
 				{/each}
 			</div>
 			<span class="shrink-0 text-[0.72rem] tracking-widest text-phosphor-dim"
-				>{lineCount} move{lineCount !== 1 ? 's' : ''}</span
+				>{report.turns.length} turn{report.turns.length !== 1 ? 's' : ''}</span
 			>
 		</div>
 		<textarea
 			class="min-h-125 w-full flex-1 resize-none border-none bg-screen p-6 font-terminal text-base leading-[1.9] text-phosphor-bright caret-ok transition-shadow duration-300 outline-none placeholder:text-phosphor-muted focus:shadow-[inset_0_0_40px_rgba(0,255,136,0.02)] max-md:min-h-62.5"
 			bind:value={notation}
-			placeholder="; paste notation document&#10;; one move per line&#10;&#10;w|4w3&#10;t|4t2&#10;..."
+			{placeholder}
 			spellcheck="false"
 			autocomplete="off"
 		></textarea>
@@ -129,6 +105,11 @@
 			class="flex shrink-0 items-center justify-between border-b border-rim bg-panel px-6 py-[0.6rem]"
 		>
 			<span class="text-[0.72rem] tracking-[0.22em] text-phosphor-dim">OUTPUT.ANALYSIS</span>
+			{#if result.kind !== 'empty'}
+				<span class="text-[0.72rem] tracking-[0.15em] text-phosphor-dim"
+					>FIRST: {PLAYER_LABEL[result.report.first]}</span
+				>
+			{/if}
 		</div>
 
 		<div class="flex-1 overflow-y-auto p-6">
@@ -139,26 +120,28 @@
 					<span class="animate-blink text-ok">█</span> awaiting input
 				</div>
 			{:else if result.kind === 'invalid'}
+				{@const errors = result.report.errors}
 				<div
 					class="glow-fail mb-5 flex items-center gap-4 border border-fail/25 bg-fail/8 px-5 py-[0.9rem] font-display text-[1.7rem] tracking-[0.12em] text-fail"
 				>
 					<span>✗</span>
 					<span>INVALID</span>
 					<span class="ml-auto text-[0.9rem] tracking-[0.08em] opacity-65"
-						>{result.errors.length} error{result.errors.length !== 1 ? 's' : ''}</span
+						>{errors.length} error{errors.length !== 1 ? 's' : ''}</span
 					>
 				</div>
 				<div class="flex flex-col gap-[0.4rem]">
-					{#each result.errors as error, i (error.index)}
+					{#each errors as error, i (`${error.turn}-${i}`)}
 						<div
 							class="error-row-border flex animate-slide-in items-start gap-3 bg-panel px-[0.9rem] py-[0.65rem]"
 							style="animation-delay: {i * 40}ms"
 						>
 							<span class="shrink-0 font-display text-[1.1rem] text-fail opacity-70"
-								>L{String(error.index + 1).padStart(2, '0')}</span
+								>T{String(error.turn).padStart(2, '0')}</span
 							>
 							<div class="flex min-w-0 flex-col gap-[0.15rem]">
-								<span class="text-[0.9rem] tracking-[0.05em] text-phosphor-bright">{error.raw}</span
+								<span class="text-[0.9rem] tracking-[0.05em] text-phosphor-bright"
+									>{error.raw || '(blank)'}</span
 								>
 								<span class="text-[0.85rem] text-fail opacity-70">{error.reason}</span>
 							</div>
@@ -166,84 +149,26 @@
 					{/each}
 				</div>
 			{:else}
+				{@const { outcome, warnings, state } = result.report}
 				<div
 					class="glow-ok mb-5 flex items-center gap-4 border border-ok/25 bg-ok/8 px-5 py-[0.9rem] font-display text-[1.7rem] tracking-[0.12em] text-ok"
 				>
 					<span>✓</span>
 					<span>VALID</span>
+					<span
+						class="ml-auto text-[0.9rem] tracking-[0.08em] {outcome.kind === 'win'
+							? 'opacity-90'
+							: 'opacity-55'}">{describeOutcome(outcome)}</span
+					>
 				</div>
-				<div class="flex flex-col gap-4">
-					{#each players as { key, label } (key)}
-						{@const pt = playerTheme[key]}
-						<div class="border border-rim bg-panel">
-							<div class="flex items-center justify-between px-[0.9rem] py-2 {pt.header}">
-								<span class="font-display text-[1.35rem] tracking-[0.2em] {pt.label}">{label}</span>
-								<span class="text-[0.72rem] tracking-[0.15em] text-phosphor-dim">
-									{result.state[key].gigs.length} gig{result.state[key].gigs.length !== 1
-										? 's'
-										: ''}
-								</span>
-							</div>
-							<div
-								class="flex items-start gap-[0.9rem] border-b border-rim px-[0.9rem] py-[0.6rem]"
-							>
-								<span
-									class="min-w-10 shrink-0 pt-[0.3rem] text-[0.65rem] tracking-[0.22em] text-phosphor-muted"
-									>FIXER</span
-								>
-								<div class="flex flex-1 flex-wrap gap-[0.4rem]">
-									{#each result.state[key].fixer as entry (entry)}
-										{@const die = parseFixer(entry)}
-										{#if die}
-											<div
-												class="flex cursor-default items-center justify-center border px-[0.45rem] py-[0.15rem] text-[0.82rem] tracking-[0.05em] transition-transform duration-100 hover:-translate-y-0.5 {ownerTheme[
-													die.owner
-												].fixer}"
-											>
-												d{die.sides}
-											</div>
-										{/if}
-									{/each}
-									{#if result.state[key].fixer.length === 0}
-										<span class="pt-1 text-[0.82rem] tracking-widest text-phosphor-muted"
-											>empty</span
-										>
-									{/if}
-								</div>
-							</div>
-							<div class="flex items-start gap-[0.9rem] px-[0.9rem] py-[0.6rem]">
-								<span
-									class="min-w-10 shrink-0 pt-[0.3rem] text-[0.65rem] tracking-[0.22em] text-phosphor-muted"
-									>GIGS</span
-								>
-								<div class="flex flex-1 flex-wrap gap-[0.4rem]">
-									{#each result.state[key].gigs as entry (entry)}
-										{@const die = parseGig(entry)}
-										{#if die}
-											{@const ot = ownerTheme[die.owner]}
-											<div
-												class="flex min-w-[2.4rem] cursor-default flex-col items-center justify-center gap-0 border px-[0.6rem] py-1 transition-transform duration-100 hover:-translate-y-0.5 {ot.gig}"
-											>
-												<span
-													class="text-center text-[0.62rem] tracking-widest opacity-55 {ot.label}"
-													>d{die.sides}</span
-												>
-												<span
-													class="text-center font-display text-[1.25rem] leading-[1.1] {ot.value}"
-													>{die.value}</span
-												>
-											</div>
-										{/if}
-									{/each}
-									{#if result.state[key].gigs.length === 0}
-										<span class="pt-1 text-[0.82rem] tracking-widest text-phosphor-muted">none</span
-										>
-									{/if}
-								</div>
-							</div>
-						</div>
-					{/each}
-				</div>
+				{#each warnings as warning (warning)}
+					<div
+						class="mb-4 border border-phosphor-dim/40 bg-panel px-4 py-2 text-[0.8rem] tracking-[0.08em] text-phosphor-dim"
+					>
+						⚠ {warning}
+					</div>
+				{/each}
+				<DiceBoard {state} />
 			{/if}
 		</div>
 	</section>

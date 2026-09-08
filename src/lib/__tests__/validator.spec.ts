@@ -1,169 +1,259 @@
 import { describe, it, expect } from 'vitest';
-import { validateDocument, applyDocument } from '../index.ts';
-import { VALID_EXAMPLE, INVALID_EXAMPLE } from './examples.ts';
+import { analyzeDocument, formatGig } from '../index.ts';
+import type { GameReport, Owner } from '../index.ts';
+import { VALID_GAME, INVALID_GAME } from '../examples.ts';
 
-const ok = (doc: string) => expect(validateDocument(doc)).toEqual([]);
-const err = (doc: string, index: number, reason: string) =>
-	expect(validateDocument(doc)).toContainEqual({
-		index,
-		raw: doc.trim().split('\n')[index].trim(),
-		reason
+const lines = (...turns: string[]) => turns.join('\n');
+const ok = (doc: string) => expect(analyzeDocument(doc).errors).toEqual([]);
+const err = (doc: string, turn: number, reason: string) =>
+	expect(analyzeDocument(doc).errors).toContainEqual(expect.objectContaining({ turn, reason }));
+const gigs = (report: GameReport, player: Owner) => report.state[player].gigs.map(formatGig);
+const fixer = (report: GameReport, player: Owner) =>
+	report.state[player].fixer.map((d) => formatGig({ ...d, value: 0 }).slice(0, -1));
+
+/** WE (odd turns) rolls A–E while THEY passes; ends after turn 9 with WE holding 5 gigs. */
+const WE_ROLLS_FIVE = ['A1', '..', 'B1', '..', 'C1', '..', 'D1', '..', 'E1'];
+
+describe('parse', () => {
+	it('accepts an empty document', () => {
+		const report = analyzeDocument('');
+		expect(report.errors).toEqual([]);
+		expect(report.turns).toHaveLength(0);
+		expect(report.outcome).toEqual({ kind: 'undecided' });
+	});
+	it('ignores trailing comments and comment-only lines', () => {
+		const report = analyzeDocument(lines('; a note', 'A4 ; rolled high', '; another', "A'2"));
+		expect(report.errors).toEqual([]);
+		expect(report.turns).toHaveLength(2);
+	});
+	it('ignores surrounding blank lines and whitespace', () =>
+		ok(lines('', '  A4  ', "  A'2", '', '')));
+	it('rejects invalid move syntax', () => err('GARBAGE', 1, 'invalid move syntax'));
+	it('rejects a lowercase die letter', () => err('a4', 1, 'invalid move syntax'));
+	it('requires a value on non-steal moves', () => err('A', 1, 'missing value'));
+	it('collects errors across turns without halting', () => {
+		expect(analyzeDocument(lines('GARBAGE', 'MORE')).errors).toHaveLength(2);
 	});
 
-describe('validateDocument', () => {
-	describe('format', () => {
-		it('accepts empty document', () => ok(''));
-		it('ignores blank lines', () => ok('\n\nw|4w3\n\n'));
-		it('trims whitespace', () => ok('  w|4w3  '));
-		it('rejects invalid notation', () => err('GARBAGE', 0, 'invalid notation format'));
-		it('collects multiple errors without halting', () => {
-			const errors = validateDocument('GARBAGE\nMORE_GARBAGE');
-			expect(errors).toHaveLength(2);
+	describe('header', () => {
+		it('defaults first player to WE', () => {
+			expect(analyzeDocument('A4').first).toBe('w');
 		});
-	});
-
-	describe('Roll', () => {
-		it('valid roll', () => ok('w|4w3'));
-		it('rejects owner !== actor', () => err('w|4t3', 0, 'Roll: owner must match actor'));
-		it('rejects rolling a die already in gigs', () =>
-			err('w|4w3\nw|4w1', 1, "Roll: d4 not in w's fixer"));
-		it('rejects d20 before all others claimed', () =>
-			err('w|20w10', 0, 'Roll: d20 must be rolled last'));
-		it('allows d20 after all others claimed', () =>
-			ok('w|4w1\nw|6w2\nw|8w3\nw|10w4\nw|12w5\nw|20w10'));
-		it('rejects value 0', () => err('w|6w0', 0, 'Roll: value 0 out of range (1–6)'));
-		it('rejects value above sides', () => err('w|4w5', 0, 'Roll: value 5 out of range (1–4)'));
-		it('accepts value at max', () => ok('w|4w4'));
-		it('accepts value at min', () => ok('w|4w1'));
-	});
-
-	describe('Steal', () => {
-		it('valid steal', () => ok('w|6w3\nt$6w3'));
-		it('rejects stealing from fixer', () => err('w$6t4', 0, "Steal: d6t not in t's gigs"));
-		it('rejects value 0', () => err('w|6w3\nt$6w0', 1, 'Steal: value 0 out of range (1–6)'));
-		it('rejects value above sides', () =>
-			err('w|6w3\nt$6w7', 1, 'Steal: value 7 out of range (1–6)'));
-		it('allows stealing back your own die', () => ok('w|6w3\nt$6w3\nw$6w3'));
-		it('stolen die appears in actor gigs for subsequent moves', () => {
-			const errors = validateDocument('w|6w3\nt$6w3\nt+6w5');
-			expect(errors).toEqual([]);
+		it('reads first: THEY', () => {
+			const report = analyzeDocument(lines('first: THEY', "A'4", 'A4'));
+			expect(report.first).toBe('t');
+			expect(report.errors).toEqual([]);
 		});
-	});
-
-	describe('Increment', () => {
-		it('valid increment', () => ok('w|6w3\nw+6w5'));
-		it('allows increment by more than 1', () => ok('w|6w1\nw+6w4'));
-		it('rejects die not in gigs', () => err('w+6w5', 0, 'Increment: d6w not in any gigs'));
-		it('rejects value equal to current', () =>
-			err('w|6w3\nw+6w3', 1, 'Increment: value 3 must be greater than current 3'));
-		it('rejects value less than current', () =>
-			err('w|6w4\nw+6w2', 1, 'Increment: value 2 must be greater than current 4'));
-		it('rejects value exceeding max sides', () =>
-			err('w|6w5\nw+6w7', 1, 'Increment: value 7 exceeds d6 max (6)'));
-		it('can increment a die in opponent gigs', () => ok('t|6t3\nw+6t5'));
-	});
-
-	describe('Decrement', () => {
-		it('valid decrement', () => ok('w|6w4\nw-6w2'));
-		it('allows decrement by more than 1', () => ok('w|6w6\nw-6w3'));
-		it('rejects die not in gigs', () => err('w-6w2', 0, 'Decrement: d6w not in any gigs'));
-		it('rejects value equal to current', () =>
-			err('w|6w3\nw-6w3', 1, 'Decrement: value 3 must be less than current 3'));
-		it('rejects value greater than current', () =>
-			err('w|6w3\nw-6w5', 1, 'Decrement: value 5 must be less than current 3'));
-		it('rejects value 0', () => err('w|6w2\nw-6w0', 1, 'Decrement: value 0 below minimum (1)'));
-		it('can decrement a die in opponent gigs', () => ok('t|6t5\nw-6t2'));
-	});
-
-	describe('Set', () => {
-		it('valid set', () => ok('w|8w7\nw.8w4'));
-		it('rejects die not in gigs', () => err('w.8w4', 0, 'Set: d8w not in any gigs'));
-		it('rejects value 0', () => err('w|8w7\nw.8w0', 1, 'Set: value 0 out of range (1–8)'));
-		it('rejects value above sides', () =>
-			err('w|8w7\nw.8w9', 1, 'Set: value 9 out of range (1–8)'));
-		it('accepts value at min', () => ok('w|8w7\nw.8w1'));
-		it('accepts value at max', () => ok('w|8w7\nw.8w8'));
-	});
-
-	describe('Reroll', () => {
-		it('valid reroll', () => ok('w|8w7\nw@8w3'));
-		it('rejects die not in gigs', () => err('w@8w3', 0, 'Reroll: d8w not in any gigs'));
-		it('rejects value 0', () => err('w|8w7\nw@8w0', 1, 'Reroll: value 0 out of range (1–8)'));
-		it('rejects value above sides', () =>
-			err('w|8w7\nw@8w9', 1, 'Reroll: value 9 out of range (1–8)'));
-	});
-
-	describe('state threading', () => {
-		it('state advances only on valid moves', () => {
-			const errors = validateDocument('w$6t4\nw|4w3');
-			expect(errors).toHaveLength(1);
-			expect(errors[0].index).toBe(0);
+		it('is case-insensitive', () => {
+			expect(analyzeDocument(lines('FIRST: they', "A'4")).errors).toEqual([]);
 		});
-		it('collects all errors across document', () => {
-			const errors = validateDocument('w$6t4\nw|4w0\nw|4w3');
-			expect(errors).toHaveLength(2);
-		});
-		it('set value persists for subsequent validation', () => ok('w|6w6\nw.6w1\nw+6w3'));
-	});
-
-	describe('applyDocument', () => {
-		it('returns default state for empty document', () => {
-			const state = applyDocument('');
-			expect(state.w.fixer).toHaveLength(6);
-			expect(state.w.gigs).toHaveLength(0);
-		});
-		it('reflects rolled dice in gigs', () => {
-			const state = applyDocument('w|6w4\nt|4t2');
-			expect(state.w.gigs).toContain('6w4');
-			expect(state.t.gigs).toContain('4t2');
-			expect(state.w.fixer).not.toContain('6w');
-		});
-		it('reflects steal: die moves to actor gigs', () => {
-			const state = applyDocument('w|6w4\nt$6w4');
-			expect(state.w.gigs).not.toContain('6w4');
-			expect(state.t.gigs).toContain('6w4');
-		});
-		it('reflects updated value after increment', () => {
-			const state = applyDocument('w|6w2\nw+6w5');
-			expect(state.w.gigs).toContain('6w5');
-			expect(state.w.gigs).not.toContain('6w2');
-		});
-		it('skips invalid moves, applies valid ones', () => {
-			const state = applyDocument('w$6t4\nw|6w3');
-			expect(state.w.gigs).toContain('6w3');
-		});
-		it('returns correct final state for valid example', () => {
-			const state = applyDocument(VALID_EXAMPLE);
-			expect(state.w.gigs).toContain('4w3');
-			expect(state.w.gigs).toContain('8w4');
-			expect(state.t.gigs).toContain('6w3');
-			expect(state.t.gigs).toContain('4t3');
-			expect(state.t.gigs).toContain('6t4');
+		it('does not count as a turn', () => {
+			expect(analyzeDocument(lines('first: WE', 'A4')).turns).toHaveLength(1);
 		});
 	});
 
-	describe('examples', () => {
-		it('valid example produces no errors', () => {
-			expect(validateDocument(VALID_EXAMPLE)).toEqual([]);
+	describe('turn prefix', () => {
+		it.each(['1| A4', '1. A4', '1 A4', '1|A4'])('accepts %s', (line) => ok(lines(line, "2| A'2")));
+		it('rejects a number that does not match position', () =>
+			err(lines('1| A4', "3| A'2"), 2, 'turn number 3 does not match position 2'));
+	});
+
+	describe('pass and blank lines', () => {
+		it('accepts .. as a pass', () => ok(lines('..', "A'2")));
+		it('rejects .. mixed with moves', () => err('A4 ..', 1, '.. must be the only entry in a turn'));
+		it('flags a blank line mid-game but keeps turn alignment', () => {
+			const report = analyzeDocument(lines('A4', '', 'B4'));
+			expect(report.errors).toEqual([
+				expect.objectContaining({ turn: 2, reason: 'empty turn — write .. to pass' })
+			]);
+			expect(report.turns[2].actor).toBe('w');
 		});
-		it('invalid example produces expected errors', () => {
-			const errors = validateDocument(INVALID_EXAMPLE);
-			expect(errors).toHaveLength(6);
-			expect(errors[0]).toMatchObject({ index: 0, reason: expect.stringContaining('Steal') });
-			expect(errors[1]).toMatchObject({
-				index: 2,
-				reason: expect.stringContaining('out of range')
-			});
-			expect(errors[2]).toMatchObject({ index: 3, reason: expect.stringContaining('d20') });
-			expect(errors[3]).toMatchObject({
-				index: 4,
-				reason: expect.stringContaining('out of range')
-			});
-			expect(errors[4]).toMatchObject({
-				index: 5,
-				reason: expect.stringContaining('not in any gigs')
-			});
-			expect(errors[5]).toMatchObject({ index: 6, reason: 'invalid notation format' });
+	});
+
+	describe('parentheses', () => {
+		it('rejects nesting', () => err('A4 ((-A2))', 1, 'instants cannot nest'));
+		it('rejects unmatched )', () => err('A4 )', 1, 'unmatched )'));
+		it('rejects unclosed (', () => err('A4 (-A2', 1, 'unclosed ('));
+		it('rejects an empty instant', () => err('A4 ()', 1, 'empty instant'));
+	});
+});
+
+describe('roll', () => {
+	it('valid roll', () => ok('A4'));
+	it("rejects rolling the opponent's die", () => err("A'4", 1, "Roll: A' is not WE's die"));
+	it('rejects rolling a die already in gigs', () =>
+		err(lines('A4', '..', 'A3'), 3, 'Roll: A is not in the fixer'));
+	it('rejects value 0', () => err('B0', 1, 'Roll: value 0 out of range (1–6)'));
+	it('rejects value above sides', () => err('A5', 1, 'Roll: value 5 out of range (1–4)'));
+	it('accepts min and max', () => ok(lines('A1', "A'4")));
+	it('rejects d20 while other dice remain in the fixer', () =>
+		err('F10', 1, 'Roll: d20 must be the last die in the fixer'));
+	it('allows d20 once it is the last die in the fixer', () =>
+		ok(lines(...WE_ROLLS_FIVE, '..', 'F20')));
+	it('allows d20 even if one of the other dice was stolen', () =>
+		ok(lines(...WE_ROLLS_FIVE, 'xE', 'F20')));
+});
+
+describe('steal', () => {
+	it('valid steal', () => ok(lines('A4', 'xA')));
+	it('rejects stealing from the fixer', () => err("xA'", 1, "Steal: A' is not in THEY's gigs"));
+	it('rejects stealing a die you already control', () =>
+		err(lines('A4', '..', 'xA'), 3, "Steal: A is not in THEY's gigs"));
+	it('allows stealing your own die back', () => ok(lines('A4', 'xA', 'xA')));
+	it('keeps the value', () => {
+		const report = analyzeDocument(lines('B3', 'xB'));
+		expect(gigs(report, 't')).toEqual(['B3']);
+		expect(gigs(report, 'w')).toEqual([]);
+	});
+	it('accepts a matching checksum value', () => ok(lines('B3', 'xB3')));
+	it('rejects a mismatched checksum value', () =>
+		err(lines('B3', 'xB2'), 2, 'Steal: B is 3, not 2'));
+	it('stolen die is usable by the new controller', () => ok(lines('B3', 'xB', '..', '+B5')));
+});
+
+describe('modifiers', () => {
+	describe('increment', () => {
+		it('valid', () => ok(lines('B3', '+B5')));
+		it('rejects die not in gigs', () => err('+B5', 1, 'Increment: B is not in any gigs'));
+		it('rejects equal', () => err(lines('B3', '+B3'), 2, 'Increment: 3 must be greater than 3'));
+		it('rejects lower', () => err(lines('B4', '+B2'), 2, 'Increment: 2 must be greater than 4'));
+		it('rejects above max', () => err(lines('B5', '+B7'), 2, 'Increment: 7 exceeds d6 max'));
+	});
+	describe('decrement', () => {
+		it('valid', () => ok(lines('B4', '-B2')));
+		it('rejects die not in gigs', () => err('-B2', 1, 'Decrement: B is not in any gigs'));
+		it('rejects equal', () => err(lines('B3', '-B3'), 2, 'Decrement: 3 must be less than 3'));
+		it('rejects higher', () => err(lines('B3', '-B5'), 2, 'Decrement: 5 must be less than 3'));
+		it('rejects 0', () => err(lines('B2', '-B0'), 2, 'Decrement: 0 below minimum (1)'));
+	});
+	describe('set and reroll', () => {
+		it('valid set', () => ok(lines('C7', '=C4')));
+		it('valid reroll', () => ok(lines('C7', '~C3')));
+		it('set may equal current', () => ok(lines('C7', '=C7')));
+		it('rejects set out of range', () =>
+			err(lines('C7', '=C9'), 2, 'Set: value 9 out of range (1–8)'));
+		it('rejects reroll of 0', () =>
+			err(lines('C7', '~C0'), 2, 'Reroll: value 0 out of range (1–8)'));
+		it('rejects die not in gigs', () => err('~C3', 1, 'Reroll: C is not in any gigs'));
+	});
+	it("can modify the opponent's die on your turn", () => ok(lines('B3', '-B1')));
+	it('can modify your own die while the opponent controls it', () => ok(lines('B3', 'xB', '+B5')));
+	it('modification persists for later validation', () => ok(lines('B6', '=B1', '+B3')));
+});
+
+describe('instants', () => {
+	it('are performed by the non-active player', () => {
+		const report = analyzeDocument("A4 (-A'2)");
+		// THEY has not rolled A', so THEY acting on it must fail; the actor flip is what we test.
+		expect(report.errors).toEqual([
+			expect.objectContaining({ turn: 1, reason: "Decrement: A' is not in any gigs" })
+		]);
+	});
+	it('can modify a die mid-turn', () => {
+		const report = analyzeDocument(lines('B4 (-B2) +B5'));
+		expect(report.errors).toEqual([]);
+		expect(gigs(report, 'w')).toEqual(['B5']);
+	});
+	it('cannot roll', () => err("A4 (A'3)", 1, 'Roll: instants cannot roll or steal'));
+	it('cannot steal', () =>
+		err(lines('A4', "A'2 (xA')"), 2, 'Steal: instants cannot roll or steal'));
+});
+
+describe('actor by turn parity', () => {
+	it('odd turns are the first player', () => {
+		const report = analyzeDocument(lines('A4', "A'2", 'B4'));
+		expect(report.turns.map((t) => t.actor)).toEqual(['w', 't', 'w']);
+	});
+	it('flips with first: THEY', () => {
+		const report = analyzeDocument(lines('first: THEY', "A'4", 'A2'));
+		expect(report.turns.map((t) => t.actor)).toEqual(['t', 'w']);
+		expect(report.errors).toEqual([]);
+	});
+	it("rejects WE rolling on THEY's turn", () =>
+		err(lines('A4', 'B3'), 2, "Roll: B is not THEY's die"));
+});
+
+describe('win', () => {
+	// WE rolls five (turns 1–9), THEY rolls A' and B' (turns 2, 4), everyone passes to `stealTurn`.
+	const game = (stealTurn: number, ...after: string[]) => {
+		const turns = [...WE_ROLLS_FIVE];
+		turns[1] = "A'1";
+		turns[3] = "B'1";
+		while (turns.length < stealTurn - 1) turns.push('..');
+		turns.push("xA' xB'", ...after);
+		return lines(...turns);
+	};
+
+	it('is declared at the start of the winning player’s next turn', () => {
+		const report = analyzeDocument(game(11, '..'));
+		expect(report.errors).toEqual([]);
+		expect(report.outcome).toEqual({ kind: 'win', player: 'w', turn: 13, how: 'start' });
+	});
+	it('is not inferred across an unrecorded opponent turn', () => {
+		expect(analyzeDocument(game(11)).outcome).toEqual({ kind: 'undecided' });
+	});
+	it('is not declared before the seventh die', () => {
+		expect(analyzeDocument(lines(...WE_ROLLS_FIVE)).outcome).toEqual({ kind: 'undecided' });
+	});
+	it('flags moves written after the game ended', () => {
+		const report = analyzeDocument(game(11, '..', 'F20'));
+		expect(report.outcome).toEqual({ kind: 'win', player: 'w', turn: 13, how: 'start' });
+		expect(report.errors).toEqual([
+			expect.objectContaining({ turn: 13, raw: 'F20', reason: 'move after game end' })
+		]);
+	});
+	it('flags a pass written after the game ended', () =>
+		err(game(11, '..', '..'), 13, 'turn after game end'));
+	it('is immediate on a steal during overtime', () => {
+		const report = analyzeDocument(game(15));
+		expect(report.outcome).toEqual({ kind: 'win', player: 'w', turn: 15, how: 'overtime' });
+	});
+	it('overtime win ends the turn immediately', () =>
+		err(game(15) + ' -A1', 15, 'move after game end'));
+	it('does not apply overtime before turn 15', () => {
+		expect(analyzeDocument(game(13, '..')).outcome).toEqual({
+			kind: 'win',
+			player: 'w',
+			turn: 15,
+			how: 'start'
 		});
+	});
+});
+
+describe('soft cap', () => {
+	it('warns past 16 turns', () => {
+		const report = analyzeDocument(lines(...Array<string>(17).fill('..')));
+		expect(report.warnings).toEqual(['game ran 17 turns; 16 is the soft cap']);
+		expect(report.errors).toEqual([]);
+	});
+	it('does not warn at 16', () => {
+		expect(analyzeDocument(lines(...Array<string>(16).fill('..'))).warnings).toEqual([]);
+	});
+});
+
+describe('examples', () => {
+	it('valid game has no errors and WE wins at the start of turn 11', () => {
+		const report = analyzeDocument(VALID_GAME);
+		expect(report.errors).toEqual([]);
+		expect(report.turns).toHaveLength(10);
+		expect(report.outcome).toEqual({ kind: 'win', player: 'w', turn: 11, how: 'start' });
+		expect(gigs(report, 'w')).toEqual(['A1', 'B1', 'D4', "B'1", "A'2", 'E12', "C'3", "D'4"]);
+		expect(gigs(report, 't')).toEqual(['C8', "E'12"]);
+		expect(fixer(report, 'w')).toEqual(['F']);
+		expect(fixer(report, 't')).toEqual(["F'"]);
+	});
+	it('invalid game reports every planted error by turn', () => {
+		const report = analyzeDocument(INVALID_GAME);
+		expect(report.outcome).toEqual({ kind: 'undecided' });
+		expect(report.errors.map((e) => [e.turn, e.raw])).toEqual([
+			[3, "B'3"],
+			[5, 'C9'],
+			[6, 'xC'],
+			[7, "xD'"],
+			[8, 'A5'],
+			[9, "xC'2"],
+			[10, ''],
+			[11, '12']
+		]);
 	});
 });

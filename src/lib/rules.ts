@@ -1,107 +1,89 @@
-import { Action, Actor } from './notation.ts';
-import type { Sides, Owner } from './notation.ts';
+import { Action, ACTION_NAME, PLAYER_LABEL, formatDie, opponent, sameDie } from './notation.ts';
+import type { Owner } from './notation.ts';
+import { findGig } from './state.ts';
+import type { GameState } from './state.ts';
 import type { ParsedMove } from './parse.ts';
-import type { DiceState } from './state.ts';
 
-function opponent(actor: Actor): Actor {
-	return actor === Actor.We ? Actor.They : Actor.We;
-}
+export type MoveContext = {
+	/** The player performing the move (already flipped for instants). */
+	actor: Owner;
+	/** True when the move was written inside parentheses. */
+	reaction: boolean;
+};
 
-function findGigValue(gigs: string[], sides: Sides, owner: Owner): number | null {
-	const prefix = `${sides}${owner}`;
-	const entry = gigs.find((g) => g.startsWith(prefix));
-	return entry != null ? parseInt(entry.slice(prefix.length), 10) : null;
-}
+export function validateMove(move: ParsedMove, ctx: MoveContext, state: GameState): string | null {
+	const { action, die } = move;
+	const value = move.value ?? 0;
+	const name = ACTION_NAME[action];
+	const label = formatDie(die);
+	const max = die.sides;
+	const inRange = value >= 1 && value <= max;
 
-export function validateMove(move: ParsedMove, state: DiceState): string | null {
-	const { actor, action, sides, owner, value } = move;
-	const max = parseInt(sides, 10);
-	const opp = opponent(actor);
+	if (ctx.reaction && (action === Action.Roll || action === Action.Steal))
+		return `${name}: instants cannot roll or steal`;
 
 	switch (action) {
 		case Action.Roll: {
-			if (owner !== actor) return `Roll: owner must match actor`;
-			if (!(state[actor].fixer as string[]).includes(`${sides}${actor}`))
-				return `Roll: d${sides} not in ${actor}'s fixer`;
-			if (sides === '20') {
-				const others: Sides[] = ['4', '6', '8', '10', '12'];
-				if (!others.every((s) => state[actor].gigs.some((g) => g.startsWith(`${s}${actor}`))))
-					return `Roll: d20 must be rolled last`;
+			if (die.owner !== ctx.actor) return `Roll: ${label} is not ${PLAYER_LABEL[ctx.actor]}'s die`;
+			const fixer = state[ctx.actor].fixer;
+			if (!fixer.some((d) => sameDie(d, die))) return `Roll: ${label} is not in the fixer`;
+			if (die.sides === 20 && fixer.length > 1)
+				return `Roll: d20 must be the last die in the fixer`;
+			if (!inRange) return `Roll: value ${value} out of range (1–${max})`;
+			return null;
+		}
+		case Action.Steal: {
+			const opp = opponent(ctx.actor);
+			const loc = findGig(state, die);
+			if (!loc || loc.holder !== opp)
+				return `Steal: ${label} is not in ${PLAYER_LABEL[opp]}'s gigs`;
+			if (move.value !== undefined && move.value !== loc.gig.value)
+				return `Steal: ${label} is ${loc.gig.value}, not ${move.value}`;
+			return null;
+		}
+		default: {
+			const loc = findGig(state, die);
+			if (!loc) return `${name}: ${label} is not in any gigs`;
+			const current = loc.gig.value;
+			if (action === Action.Increment) {
+				if (value <= current) return `Increment: ${value} must be greater than ${current}`;
+				if (value > max) return `Increment: ${value} exceeds d${max} max`;
+			} else if (action === Action.Decrement) {
+				if (value >= current) return `Decrement: ${value} must be less than ${current}`;
+				if (value < 1) return `Decrement: ${value} below minimum (1)`;
+			} else if (!inRange) {
+				return `${name}: value ${value} out of range (1–${max})`;
 			}
-			if (value < 1 || value > max) return `Roll: value ${value} out of range (1–${max})`;
+			return null;
+		}
+	}
+}
+
+/** Returns a new state; assumes the move has passed `validateMove`. */
+export function applyMove(move: ParsedMove, ctx: MoveContext, state: GameState): GameState {
+	const next = structuredClone(state);
+	const { action, die } = move;
+	const value = move.value ?? 0;
+
+	switch (action) {
+		case Action.Roll: {
+			const player = next[ctx.actor];
+			player.fixer = player.fixer.filter((d) => !sameDie(d, die));
+			player.gigs.push({ ...die, value });
 			break;
 		}
 		case Action.Steal: {
-			if (findGigValue(state[opp].gigs, sides, owner) === null)
-				return `Steal: d${sides}${owner} not in ${opp}'s gigs`;
-			if (value < 1 || value > max) return `Steal: value ${value} out of range (1–${max})`;
+			const loc = findGig(next, die);
+			if (!loc) break;
+			const [gig] = next[loc.holder].gigs.splice(loc.index, 1);
+			next[ctx.actor].gigs.push(gig);
 			break;
 		}
-		case Action.Increment: {
-			const current =
-				findGigValue(state['w'].gigs, sides, owner) ?? findGigValue(state['t'].gigs, sides, owner);
-			if (current === null) return `Increment: d${sides}${owner} not in any gigs`;
-			if (value <= current)
-				return `Increment: value ${value} must be greater than current ${current}`;
-			if (value > max) return `Increment: value ${value} exceeds d${sides} max (${max})`;
-			break;
+		default: {
+			const loc = findGig(next, die);
+			if (!loc) break;
+			next[loc.holder].gigs[loc.index] = { ...loc.gig, value };
 		}
-		case Action.Decrement: {
-			const current =
-				findGigValue(state['w'].gigs, sides, owner) ?? findGigValue(state['t'].gigs, sides, owner);
-			if (current === null) return `Decrement: d${sides}${owner} not in any gigs`;
-			if (value >= current) return `Decrement: value ${value} must be less than current ${current}`;
-			if (value < 1) return `Decrement: value ${value} below minimum (1)`;
-			break;
-		}
-		case Action.Set:
-		case Action.Reroll: {
-			const inW = findGigValue(state['w'].gigs, sides, owner);
-			const inT = findGigValue(state['t'].gigs, sides, owner);
-			if (inW === null && inT === null)
-				return `${action === Action.Set ? 'Set' : 'Reroll'}: d${sides}${owner} not in any gigs`;
-			if (value < 1 || value > max)
-				return `${action === Action.Set ? 'Set' : 'Reroll'}: value ${value} out of range (1–${max})`;
-			break;
-		}
-	}
-
-	return null;
-}
-
-export function applyMove(move: ParsedMove, state: DiceState): DiceState {
-	const { actor, action, sides, owner, value } = move;
-	const opp = opponent(actor);
-	const next: DiceState = {
-		w: { fixer: [...state.w.fixer], gigs: [...state.w.gigs] },
-		t: { fixer: [...state.t.fixer], gigs: [...state.t.gigs] }
-	};
-	const prefix = `${sides}${owner}`;
-	const newEntry = `${sides}${owner}${value}` as `${Sides}${Owner}${number}`;
-
-	switch (action) {
-		case Action.Roll:
-			next[actor].fixer = next[actor].fixer.filter(
-				(d) => d !== (`${sides}${actor}` as `${Sides}${Owner}`)
-			);
-			next[actor].gigs.push(newEntry);
-			break;
-		case Action.Steal:
-			next[opp].gigs = next[opp].gigs.filter((g) => !g.startsWith(prefix));
-			next[actor].gigs.push(newEntry);
-			break;
-		case Action.Increment:
-		case Action.Decrement:
-		case Action.Set:
-		case Action.Reroll:
-			for (const player of ['w', 't'] as const) {
-				const idx = next[player].gigs.findIndex((g) => g.startsWith(prefix));
-				if (idx !== -1) {
-					next[player].gigs[idx] = newEntry;
-					break;
-				}
-			}
-			break;
 	}
 
 	return next;

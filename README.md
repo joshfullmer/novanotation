@@ -1,42 +1,33 @@
-# sv
+# novanotation
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+Validator and reference for **Nova Notation**, a compact handwriting-first notation for the
+dice state of the Nova card game. Paste a transcript, get every illegal move by turn, the final
+board, and the computed winner.
 
-## Creating a project
+The notation itself is specified in [`docs/notation.md`](docs/notation.md).
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
+```
+first: WE
+1| A4 -A1
+2| A'4
+3| B4 -B2 (-A'2)
+4| xB
 ```
 
-To recreate this project with the same configuration:
+## Layout
+
+- `src/lib/` — pure core: `parse.ts` (tokens → turns), `rules.ts` (validate/apply a move),
+  `game.ts` (turn order, instants, win detection), `state.ts`, `notation.ts`.
+- `src/lib/examples.ts` — the canonical valid and invalid games used by tests and the UI.
+- `src/routes/` — validator page (`/`) and reference page (`/about`).
+
+## Scripts
 
 ```sh
-# recreate this project
-pnpm dlx sv@0.15.1 create --template minimal --types ts --add prettier eslint vitest="usages:unit" mdsvex sveltekit-adapter="adapter:auto" tailwindcss="plugins:typography" --install pnpm novanotation
+pnpm dev        # dev server
+pnpm test       # vitest, single run
+pnpm examples   # trace the example games in the terminal
+pnpm verify     # format, lint, check, test, build
 ```
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+Stack: SvelteKit 2, Svelte 5, Tailwind v4, TypeScript, Vitest, pnpm.
