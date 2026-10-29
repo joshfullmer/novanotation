@@ -1,7 +1,16 @@
 # novanotation
 
+> **This project has moved.** Nova Notation now lives inside novastack, at
+> **<https://novastack.gg/notation>**: a tour, the full reference, a printable scoresheet and the
+> checker. `novanotation.net` redirects there, and this repository is archived and no longer
+> maintained.
+>
+> The notation has changed since this snapshot (one roll-in per turn, `A<>B'` for a swap, Reactions
+> reserved, and the Comprehensive Rules cited for each rule), so treat what follows as history, not
+> as the spec.
+
 Validator and reference for **Nova Notation**, a compact handwriting-first notation for the
-dice state of the Nova card game. Paste a transcript, get every illegal move by turn, the final
+dice state of the Cyberpunk TCG. Paste a transcript, get every illegal move by turn, the final
 board, and the computed winner.
 
 The notation itself is specified in [`docs/notation.md`](docs/notation.md).
